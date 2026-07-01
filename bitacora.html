@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bitacora de Montacargas | SERVIMON</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="assets/servimon-logo.jpg" alt="SERVIMON">
+        <div class="brand-title">
+          <strong>Bitacora de montacargas</strong>
+          <span>Renta semanal: 63 horas incluidas</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="registro.html">Registro</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="toolbar">
+        <div class="field">
+          <label for="fromDate">Desde</label>
+          <input id="fromDate" type="date">
+        </div>
+        <div class="field">
+          <label for="toDate">Hasta</label>
+          <input id="toDate" type="date">
+        </div>
+        <button id="weekBtn" type="button">Semana actual</button>
+        <button class="secondary" id="exportBtn" type="button">Exportar CSV</button>
+        <button class="ghost" id="printBtn" type="button">Imprimir</button>
+      </div>
+
+      <div class="metrics">
+        <div class="metric"><span>Horas usadas</span><strong id="used">0:00</strong></div>
+        <div class="metric"><span>Horas incluidas</span><strong>63:00</strong></div>
+        <div class="metric"><span>Horas disponibles</span><strong id="remaining">63:00</strong></div>
+        <div class="metric danger"><span>Horas extra</span><strong id="extra">0:00</strong></div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Operador</th>
+              <th>Montacargas</th>
+              <th>Entrada</th>
+              <th>Salida comida</th>
+              <th>Regreso comida</th>
+              <th>Salida</th>
+              <th>Horas netas</th>
+              <th>Firma operador</th>
+              <th>Firma jefe area</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>QR del montacargas</h2>
+      <div class="qr-panel">
+        <img id="qr" alt="QR para registro de montacargas">
+        <div>
+          <p class="muted">Este QR abre la pagina de registro. Cuando subas estos archivos a la misma carpeta del cotizador, abre esta bitacora en internet y el QR se ajustara al enlace final.</p>
+          <label for="qrLink">Enlace del QR</label>
+          <input id="qrLink" readonly>
+          <div class="actions">
+            <a class="link-button" id="openRegistro" href="registro.html">Abrir registro</a>
+            <button class="secondary" id="downloadQr" type="button">Descargar QR</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script>
+    function setCurrentWeek() {
+      const now = new Date();
+      const day = now.getDay() || 7;
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - day + 1);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      $("fromDate").value = todayKey(monday);
+      $("toDate").value = todayKey(sunday);
+      render();
+    }
+
+    function filteredRecords() {
+      const from = $("fromDate").value;
+      const to = $("toDate").value;
+      return loadRecords()
+        .filter((record) => (!from || record.date >= from) && (!to || record.date <= to))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.operator.localeCompare(b.operator));
+    }
+
+    async function refreshCentral() {
+      if (!apiUrl()) return;
+      try {
+        await fetchRemoteRecords($("fromDate").value, $("toDate").value);
+      } catch {
+        // La bitacora conserva la copia local si no se puede leer la hoja.
+      }
+    }
+
+    async function render() {
+      await refreshCentral();
+      const records = filteredRecords();
+      const tbody = $("rows");
+      tbody.innerHTML = "";
+      let total = 0;
+
+      for (const record of records) {
+        const minutes = netMinutes(record);
+        total += minutes;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${formatDate(record.date)}</td>
+          <td>${escapeHtml(record.operator)}</td>
+          <td>${escapeHtml(record.forklift)}</td>
+          <td>${record.entrada || "-"}</td>
+          <td>${record.salidaComida || "-"}</td>
+          <td>${record.regresoComida || "-"}</td>
+          <td>${record.salida || "-"}</td>
+          <td><strong>${formatMinutes(minutes)}</strong></td>
+          <td>${signatureCell(record.operatorSignature)}</td>
+          <td>${signatureCell(record.bossSignature)}</td>
+          <td>${recordStatus(record)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      if (!records.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="muted">No hay registros en el rango seleccionado.</td></tr>';
+      }
+
+      $("used").textContent = formatMinutes(total);
+      $("remaining").textContent = formatMinutes(Math.max(0, INCLUDED_MINUTES - total));
+      $("extra").textContent = formatMinutes(Math.max(0, total - INCLUDED_MINUTES));
+    }
+
+    function signatureCell(value) {
+      if (!value) return '<span class="signature-placeholder">-</span>';
+      if (String(value).startsWith("data:image")) {
+        return `<img class="signature-preview" src="${value}" alt="Firma">`;
+      }
+      return '<span class="signature-placeholder">Firmado</span>';
+    }
+
+    function setupQr() {
+      const url = registroUrl();
+      $("qrLink").value = url;
+      $("openRegistro").href = url;
+      $("qr").src = `https://api.qrserver.com/v1/create-qr-code/?size=520x520&data=${encodeURIComponent(url)}`;
+    }
+
+    $("fromDate").addEventListener("change", render);
+    $("toDate").addEventListener("change", render);
+    $("weekBtn").addEventListener("click", setCurrentWeek);
+    $("printBtn").addEventListener("click", () => window.print());
+    $("exportBtn").addEventListener("click", () => exportCsv(filteredRecords(), $("fromDate").value, $("toDate").value));
+    $("downloadQr").addEventListener("click", () => {
+      const link = document.createElement("a");
+      link.href = $("qr").src;
+      link.download = "qr-registro-montacargas.png";
+      link.click();
+    });
+
+    setupQr();
+    setCurrentWeek();
+    setInterval(render, 30000);
+  </script>
+</body>
+</html>
