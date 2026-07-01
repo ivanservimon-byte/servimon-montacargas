@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registro de Montacargas | SERVIMON</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="assets/servimon-logo.jpg" alt="SERVIMON">
+        <div class="brand-title">
+          <strong>Registro de montacargas</strong>
+          <span>Control de horas por escaneo</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a class="secondary" href="bitacora.html">Bitacora</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="layout">
+      <section class="panel">
+        <h1>Datos del servicio</h1>
+        <p class="muted">Estos datos se guardan en este celular para agilizar los siguientes escaneos.</p>
+        <div class="fields">
+          <div>
+            <label for="operator">Operador</label>
+            <input id="operator" autocomplete="name" placeholder="Nombre del operador">
+          </div>
+          <div>
+            <label for="forklift">Montacargas</label>
+            <input id="forklift" autocomplete="off" placeholder="Ej. MC-01">
+          </div>
+        </div>
+        <div class="notice" id="notice">Capture operador y montacargas para iniciar.</div>
+      </section>
+
+      <section class="panel scan-card">
+        <h2>Siguiente registro</h2>
+        <div class="event-name" id="nextEvent">Entrada</div>
+        <div class="clock" id="clock">--:--</div>
+        <button class="red primary-action" id="scanBtn">Registrar hora</button>
+        <p class="muted">El sistema asigna automaticamente: entrada, salida a comida, regreso de comida y salida.</p>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="modal">
+    <div class="modal">
+      <h2>Confirmar registro</h2>
+      <p class="muted" id="modalText">Revise la informacion antes de guardar.</p>
+      <div class="summary">
+        <div><span>Evento</span><strong id="confirmEvent">-</strong></div>
+        <div><span>Hora</span><strong id="confirmTime">-</strong></div>
+        <div><span>Operador</span><strong id="confirmOperator">-</strong></div>
+        <div><span>Montacargas</span><strong id="confirmForklift">-</strong></div>
+      </div>
+
+      <div class="signatures" id="signatures">
+        <div>
+          <label>Firma del operador</label>
+          <canvas id="operatorSignature" width="520" height="190"></canvas>
+          <div class="actions"><button class="ghost" id="clearOperator" type="button">Limpiar firma</button></div>
+        </div>
+        <div>
+          <label>Firma del jefe de area</label>
+          <canvas id="bossSignature" width="520" height="190"></canvas>
+          <div class="actions"><button class="ghost" id="clearBoss" type="button">Limpiar firma</button></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="red" id="acceptBtn" type="button">Aceptar y guardar</button>
+        <button class="secondary" id="cancelBtn" type="button">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script>
+    let pending = null;
+    const operatorPad = setupSignaturePad("operatorSignature");
+    const bossPad = setupSignaturePad("bossSignature");
+
+    function readIdentity() {
+      return {
+        operator: $("operator").value.trim(),
+        forklift: $("forklift").value.trim()
+      };
+    }
+
+    function persistIdentity() {
+      localStorage.setItem("servimon_operator", $("operator").value.trim());
+      localStorage.setItem("servimon_forklift", $("forklift").value.trim());
+    }
+
+    function refresh() {
+      $("clock").textContent = currentTime();
+      const identity = readIdentity();
+      if (!identity.operator || !identity.forklift) {
+        $("nextEvent").textContent = "Entrada";
+        $("notice").textContent = "Capture operador y montacargas para iniciar.";
+        return;
+      }
+
+      const records = loadRecords();
+      const record = getRecord(records, todayKey(), identity.operator, identity.forklift);
+      const event = nextEvent(record || {});
+      $("nextEvent").textContent = event ? LABELS[event] : "Dia completo";
+      $("notice").textContent = event
+        ? `Listo para registrar: ${LABELS[event]}.`
+        : "Este operador ya completo entrada, comida, regreso y salida de hoy.";
+    }
+
+    async function openModal() {
+      const identity = readIdentity();
+      if (!identity.operator || !identity.forklift) {
+        $("notice").textContent = "Falta operador o montacargas.";
+        return;
+      }
+
+      persistIdentity();
+      $("notice").textContent = "Revisando bitacora central...";
+      try {
+        await fetchRemoteDay(todayKey(), identity.operator, identity.forklift);
+      } catch {
+        $("notice").textContent = "Sin conexion central. Se guardara respaldo local y se reintentara.";
+      }
+
+      const records = loadRecords();
+      const record = getOrCreateRecord(records, todayKey(), identity.operator, identity.forklift);
+      const event = nextEvent(record);
+      if (!event) {
+        $("notice").textContent = "El dia ya esta completo para este operador y montacargas.";
+        return;
+      }
+
+      pending = { records, record, event, time: currentTime() };
+      const isExit = event === "salida";
+      $("confirmEvent").textContent = LABELS[event];
+      $("confirmTime").textContent = pending.time;
+      $("confirmOperator").textContent = identity.operator;
+      $("confirmForklift").textContent = identity.forklift;
+      $("modalText").textContent = isExit
+        ? "Para guardar la salida se requiere firma del operador y firma del jefe de area."
+        : "Revise la informacion antes de guardar.";
+      $("signatures").classList.toggle("open", isExit);
+      operatorPad.clear();
+      bossPad.clear();
+      $("modal").classList.add("open");
+    }
+
+    function closeModal() {
+      pending = null;
+      $("modal").classList.remove("open");
+    }
+
+    async function accept() {
+      if (!pending) return;
+      if (pending.event === "salida" && (!operatorPad.hasInk() || !bossPad.hasInk())) {
+        $("modalText").textContent = "Falta una firma. Deben firmar operador y jefe de area.";
+        return;
+      }
+
+      const payload = {
+        date: pending.record.date,
+        operator: pending.record.operator,
+        forklift: pending.record.forklift,
+        event: pending.event,
+        time: pending.time,
+        operatorSignature: pending.event === "salida" ? operatorPad.dataUrl() : "",
+        bossSignature: pending.event === "salida" ? bossPad.dataUrl() : ""
+      };
+
+      $("acceptBtn").disabled = true;
+      $("acceptBtn").textContent = "Guardando...";
+      await saveEventCentral(payload);
+      $("notice").textContent = apiUrl()
+        ? `${LABELS[pending.event]} guardada a las ${pending.time}.`
+        : `${LABELS[pending.event]} guardada localmente. Falta configurar Google Sheets.`;
+      $("acceptBtn").disabled = false;
+      $("acceptBtn").textContent = "Aceptar y guardar";
+      closeModal();
+      refresh();
+    }
+
+    $("operator").value = localStorage.getItem("servimon_operator") || "";
+    $("forklift").value = localStorage.getItem("servimon_forklift") || "";
+    $("operator").addEventListener("input", refresh);
+    $("forklift").addEventListener("input", refresh);
+    $("scanBtn").addEventListener("click", openModal);
+    $("acceptBtn").addEventListener("click", accept);
+    $("cancelBtn").addEventListener("click", closeModal);
+    $("clearOperator").addEventListener("click", operatorPad.clear);
+    $("clearBoss").addEventListener("click", bossPad.clear);
+    syncPending().then((count) => {
+      if (count) $("notice").textContent = `Se sincronizaron ${count} registros pendientes.`;
+    });
+    setInterval(refresh, 1000);
+    refresh();
+  </script>
+</body>
+</html>
