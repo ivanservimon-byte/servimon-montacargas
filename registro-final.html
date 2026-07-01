@@ -303,6 +303,8 @@ tr:last-child td {
 
 .modal {
   width: min(690px, 100%);
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
   background: #fff;
   border-radius: 8px;
   border: 1px solid var(--line);
@@ -345,9 +347,17 @@ tr:last-child td {
   display: grid;
 }
 
+.signature-step {
+  display: none;
+}
+
+.signature-step.open {
+  display: block;
+}
+
 canvas {
   width: 100%;
-  height: 145px;
+  height: 210px;
   border: 1px dashed #98a2b3;
   border-radius: 6px;
   background: #fff;
@@ -397,6 +407,20 @@ canvas {
 
   .clock {
     font-size: 40px;
+  }
+
+  .modal-backdrop {
+    align-items: flex-start;
+    overflow-y: auto;
+  }
+
+  .modal {
+    max-height: none;
+    margin-bottom: 22px;
+  }
+
+  canvas {
+    height: 240px;
   }
 }
 
@@ -458,12 +482,12 @@ canvas {
       </div>
 
       <div class="signatures" id="signatures">
-        <div>
+        <div class="signature-step" id="operatorStep">
           <label>Firma del operador</label>
           <canvas id="operatorSignature" width="520" height="190"></canvas>
           <div class="actions"><button class="ghost" id="clearOperator" type="button">Limpiar firma</button></div>
         </div>
-        <div>
+        <div class="signature-step" id="bossStep">
           <label>Firma del jefe de area</label>
           <canvas id="bossSignature" width="520" height="190"></canvas>
           <div class="actions"><button class="ghost" id="clearBoss" type="button">Limpiar firma</button></div>
@@ -850,6 +874,7 @@ async function syncPending() {
 </script>
   <script>
     let pending = null;
+    let signatureStep = "operator";
     const operatorPad = setupSignaturePad("operatorSignature");
     const bossPad = setupSignaturePad("bossSignature");
 
@@ -916,9 +941,24 @@ async function syncPending() {
         ? "Para guardar la salida se requiere firma del operador y firma del jefe de area."
         : "Revise la informacion antes de guardar.";
       $("signatures").classList.toggle("open", isExit);
+      signatureStep = "operator";
+      updateSignatureStep();
       operatorPad.clear();
       bossPad.clear();
       $("modal").classList.add("open");
+    }
+
+    function updateSignatureStep() {
+      const isExit = pending && pending.event === "salida";
+      $("operatorStep").classList.toggle("open", isExit && signatureStep === "operator");
+      $("bossStep").classList.toggle("open", isExit && signatureStep === "boss");
+      if (!isExit) {
+        $("acceptBtn").textContent = "Aceptar y guardar";
+        return;
+      }
+      $("acceptBtn").textContent = signatureStep === "operator"
+        ? "Aceptar firma operador"
+        : "Aceptar firma jefe y guardar";
     }
 
     function closeModal() {
@@ -928,9 +968,21 @@ async function syncPending() {
 
     async function accept() {
       if (!pending) return;
-      if (pending.event === "salida" && (!operatorPad.hasInk() || !bossPad.hasInk())) {
-        $("modalText").textContent = "Falta una firma. Deben firmar operador y jefe de area.";
-        return;
+      if (pending.event === "salida") {
+        if (signatureStep === "operator") {
+          if (!operatorPad.hasInk()) {
+            $("modalText").textContent = "Falta la firma del operador.";
+            return;
+          }
+          signatureStep = "boss";
+          $("modalText").textContent = "Ahora firme el jefe de area para guardar la salida.";
+          updateSignatureStep();
+          return;
+        }
+        if (!bossPad.hasInk()) {
+          $("modalText").textContent = "Falta la firma del jefe de area.";
+          return;
+        }
       }
 
       const payload = {
