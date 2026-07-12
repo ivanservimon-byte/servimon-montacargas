@@ -481,7 +481,7 @@ canvas {
   </main>
 
   <script>
-window.SERVIMON_CONFIG = { GOOGLE_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbyI63EU9T1fdI5DLIbcJ5GcFY0PZVf0DGoIZhAx7Zogz7phMibNPxf3JxseVH2xxjXBlQ/exec" };
+window.SERVIMON_CONFIG = { GOOGLE_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbznZubiQlJ-uoRVvKsjuiGjNCkt6TabAU3LOwfJWGt3VU0QLNq1adqeCnpLt8yafTGPag/exec" };
 </script>
 <script>
 const STORAGE_KEY = "servimon_montacargas_registros_v2";
@@ -524,6 +524,11 @@ function minutesFromTime(value) {
   return hours * 60 + minutes;
 }
 
+function currentMinutesOfDay() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
 function formatMinutes(total) {
   const safe = Math.max(0, Math.round(total || 0));
   const hours = Math.floor(safe / 60);
@@ -543,16 +548,37 @@ function saveRecords(records) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
 }
 
+function recordKey(record) {
+  return `${record.date}|${record.operator}|${record.forklift}`;
+}
+
 function mergeRecords(localRecords, remoteRecords) {
   const map = new Map();
   for (const record of [...localRecords, ...remoteRecords]) {
-    const key = `${record.date}|${record.operator}|${record.forklift}`;
+    const key = recordKey(record);
     const current = map.get(key) || {};
     map.set(key, { ...current, ...record });
   }
   const merged = [...map.values()];
   saveRecords(merged);
   return merged;
+}
+
+function replaceRemoteRange(localRecords, remoteRecords, from, to) {
+  const remoteKeys = new Set(remoteRecords.map(recordKey));
+  const kept = localRecords.filter((record) => {
+    const inRange = (!from || record.date >= from) && (!to || record.date <= to);
+    return !inRange || remoteKeys.has(recordKey(record));
+  });
+  return mergeRecords(kept, remoteRecords);
+}
+
+function replaceRemoteRecord(localRecords, remoteRecord, date, operator, forklift) {
+  const key = `${date}|${operator}|${forklift}`;
+  const kept = localRecords.filter((record) => recordKey(record) !== key);
+  if (remoteRecord) kept.push(remoteRecord);
+  saveRecords(kept);
+  return kept;
 }
 
 function queuePending(payload) {
@@ -616,14 +642,19 @@ function nextEvent(record) {
 
 function netMinutes(record) {
   const entrada = minutesFromTime(record.entrada);
+  if (entrada === null) return 0;
+  const isToday = record.date === todayKey();
   const salida = minutesFromTime(record.salida);
-  if (entrada === null || salida === null) return 0;
+  const end = salida !== null ? salida : (isToday ? currentMinutesOfDay() : null);
+  if (end === null) return 0;
   const salidaComida = minutesFromTime(record.salidaComida);
   const regresoComida = minutesFromTime(record.regresoComida);
-  const comida = salidaComida !== null && regresoComida !== null
-    ? Math.max(0, regresoComida - salidaComida)
-    : 0;
-  return Math.max(0, salida - entrada - comida);
+  let comida = 0;
+  if (salidaComida !== null) {
+    const regreso = regresoComida !== null ? regresoComida : end;
+    comida = Math.max(0, Math.min(end, regreso) - salidaComida);
+  }
+  return Math.max(0, end - entrada - comida);
 }
 
 function recordStatus(record) {
@@ -768,14 +799,13 @@ async function fetchRemoteRecords(from = "", to = "") {
   const response = await jsonp({ action: "list", from, to });
   if (!response.ok) throw new Error(response.error || "No se pudo leer la bitacora.");
   const remote = response.records || [];
-  return mergeRecords(loadRecords(), remote);
+  return replaceRemoteRange(loadRecords(), remote, from, to);
 }
 
 async function fetchRemoteDay(date, operator, forklift) {
   const response = await jsonp({ action: "record", date, operator, forklift });
   if (!response.ok) throw new Error(response.error || "No se pudo leer el registro.");
-  const remote = response.record ? [response.record] : [];
-  return mergeRecords(loadRecords(), remote);
+  return replaceRemoteRecord(loadRecords(), response.record || null, date, operator, forklift);
 }
 
 function postToGoogleSheets(payload) {
@@ -909,7 +939,7 @@ async function syncPending() {
       }
 
       if (!records.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="muted">No hay registros en el rango seleccionado.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="muted">No hay registros en el rango seleccionado.</td></tr>';
       }
 
       $("used").textContent = formatMinutes(total);
